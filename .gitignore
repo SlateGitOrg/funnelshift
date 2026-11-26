@@ -1,0 +1,12 @@
+/.venv/
+/.tmp/
+/data/
+/reports/
+/dist/
+/build/
+/.hypothesis/
+/.pytest_cache/
+/.ruff_cache/
+__pycache__/
+*.egg-info/
+*.py[cod]

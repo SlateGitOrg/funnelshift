@@ -1,0 +1,12 @@
+# Same funnel, but the last step only counts subscriptions to the team plan.
+name: trial_to_team_plan
+window_days: 14
+steps:
+  - event: signup
+  - event: workspace_created
+  - event: teammate_invited
+  - event: project_created
+  - event: subscribed
+    where:
+      plan: team
+segments: [platform, source]

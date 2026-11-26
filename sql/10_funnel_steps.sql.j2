@@ -1,0 +1,67 @@
+{#- Rendered by funnelshift.render from a validated Funnel. Not valid SQL until rendered.
+
+   Step 1 is the user's earliest qualifying step-1 event; it anchors the conversion window.
+   Step k (k >= 2) is the earliest qualifying step-k event whose timestamp is
+     >= the step k-1 timestamp        (ties count as in order)
+     <= the step 1 timestamp + window (the window is closed at its upper end)
+   Choosing the earliest match at every step is optimal: it leaves the most room for the next
+   step, so it reaches the deepest step any ordered path can reach (the oracle checks this).
+-#}
+{%- macro where(alias, step, pad) -%}
+{%- for prop, value in step.where.items() %}
+{{ pad }}AND {{ alias }}.{{ prop }} = {{ value | sql_str }}
+{%- endfor -%}
+{%- endmacro -%}
+{%- set n = steps | length -%}
+CREATE OR REPLACE TABLE funnel_step_defs AS
+SELECT *
+FROM (VALUES
+{%- for step in steps %}
+    ({{ loop.index }}, {{ step.event | sql_str }}){{ "," if not loop.last }}
+{%- endfor %}
+) AS t(step_no, step_name);
+
+CREATE OR REPLACE TABLE funnel_steps AS
+WITH
+s1 AS (
+    SELECT user_id, MIN(ts) AS ts_1
+    FROM clean_events
+    WHERE event_name = {{ steps[0].event | sql_str }}{{ where("clean_events", steps[0], "      ") }}
+    GROUP BY user_id
+){% for k in range(2, n + 1) %},
+s{{ k }} AS (
+    SELECT p.user_id,
+{%- for j in range(1, k) %}
+           p.ts_{{ j }},
+{%- endfor %}
+           MIN(e.ts) AS ts_{{ k }}
+    FROM s{{ k - 1 }} AS p
+    JOIN clean_events AS e
+      ON e.user_id = p.user_id
+     AND e.event_name = {{ steps[k - 1].event | sql_str }}{{ where("e", steps[k - 1], "     ") }}
+     AND e.ts >= p.ts_{{ k - 1 }}
+     AND e.ts <= p.ts_1 + INTERVAL '{{ window_days }} days'
+    GROUP BY p.user_id{% for j in range(1, k) %}, p.ts_{{ j }}{% endfor %}
+){% endfor %}
+
+SELECT u.user_id,
+       u.cohort_week,
+       u.cohort_start,
+       concat_ws('|'{% for col in segments %}, coalesce(u.{{ col }}, 'unknown'){% endfor %}) AS segment,
+       CASE
+{%- for k in range(n, 0, -1) %}
+           WHEN s{{ k }}.ts_{{ k }} IS NOT NULL THEN {{ k }}
+{%- endfor %}
+           ELSE 0
+       END AS furthest_step{% for k in range(1, n + 1) %},
+       s{{ k }}.ts_{{ k }}{% endfor %}
+FROM users AS u
+{%- for k in range(1, n + 1) %}
+LEFT JOIN s{{ k }} ON s{{ k }}.user_id = u.user_id
+{%- endfor %};
+
+CREATE OR REPLACE TABLE funnel_reach AS
+{%- for k in range(1, n + 1) %}
+SELECT user_id, {{ k }} AS step_no, ts_{{ k }} AS step_ts FROM funnel_steps WHERE ts_{{ k }} IS NOT NULL
+{{- "\nUNION ALL" if not loop.last }}
+{%- endfor %};
